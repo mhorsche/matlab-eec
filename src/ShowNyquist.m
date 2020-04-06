@@ -1,0 +1,275 @@
+classdef ShowNyquist < matlab.apps.AppBase
+  
+  % Properties
+  properties (Access = public)
+    
+    UIFigure                    matlab.ui.Figure
+    TabGroup                    matlab.ui.container.TabGroup
+    OverviewTab                 matlab.ui.container.Tab
+    UIAxesOverview              matlab.ui.control.UIAxes
+    ElementsDropDownLabel       matlab.ui.control.Label
+    ElementsDropDown            matlab.ui.control.DropDown
+    UISpinnerLabels
+    UISpinners
+    
+  end % properties (Access = public)
+  
+  properties (Access = private)
+    
+    eecmodel;
+    
+    f_Hz;
+    ZRe_Ohm;
+    ZIm_Ohm;
+    
+  end % properties (Access = private)
+  
+  % Methods
+  methods (Access = private, Hidden = true)
+    
+    function plotNyquist(app)
+      
+      % calculate ac response
+      response = ac(app.eecmodel,app.f_Hz(:));
+      
+      % Nyquist plot
+      cla(app.UIAxesOverview);
+      co = app.UIAxesOverview.ColorOrder;
+      
+      % Measurement points
+      plot(app.UIAxesOverview,app.ZRe_Ohm(:),app.ZIm_Ohm(:),'.-');
+      
+      % EEC model result
+      plot(app.UIAxesOverview,response.ZRe_Ohm,response.ZIm_Ohm,'-k');
+      
+      % EEC model elements
+      app.UIAxesOverview.ColorOrder = co;
+      app.UIAxesOverview.ColorOrderIndex = 1;
+      hline = plot(app.UIAxesOverview,response.Zelements_Ohm,'.-');
+      
+      % Highlight selected element
+      hline(strcmpi(app.ElementsDropDown.Value, app.ElementsDropDown.Items)).LineWidth = 2;
+
+      % Format nyquist plot
+      legend(app.UIAxesOverview,['Reference','EEC model',response.Zlabels],...
+        'Orientation','horizontal','Location','best','NumColumns',5);
+      
+    end % function plotNyquist(app)
+    
+  end % methods (Access = private, Hidden = true)
+  
+  methods (Access = private, Hidden = false)
+    
+    % Create UIFigure and components
+    function createComponents(app)
+      
+      % Create UIFigure and hide until all components are created
+      app.UIFigure = uifigure('Visible', 'off');
+      app.UIFigure.Position = [100 100 640 480];
+      app.UIFigure.Name = 'Frequency domain';
+      
+      % Create TabGroup
+      app.TabGroup = uitabgroup(app.UIFigure);
+      app.TabGroup.SelectionChangedFcn = createCallbackFcn(app, @TabGroupSelectionChanged, true);
+      app.TabGroup.Position = [1 1 640 480];
+      
+      % Create OverviewTab
+      app.OverviewTab = uitab(app.TabGroup);
+      app.OverviewTab.Title = 'Overview';
+      
+      % Create UIAxesOverview
+      app.UIAxesOverview = uiaxes(app.OverviewTab);
+      title(app.UIAxesOverview, '')
+      xlabel(app.UIAxesOverview, 'Re{Z} in Ohm')
+      ylabel(app.UIAxesOverview, 'Im{Z} in Ohm')
+      app.UIAxesOverview.Box = 'on';
+      app.UIAxesOverview.NextPlot = 'add';
+      app.UIAxesOverview.XGrid = 'on';
+      app.UIAxesOverview.YGrid = 'on';
+      app.UIAxesOverview.YDir = 'reverse';
+      app.UIAxesOverview.DataAspectRatioMode = 'manual';
+      app.UIAxesOverview.DataAspectRatio = [1 1 1];
+      app.UIAxesOverview.Position = [1 1 534 454];
+      
+      % Create ElementsDropDownLabel
+      app.ElementsDropDownLabel = uilabel(app.OverviewTab);
+      app.ElementsDropDownLabel.Position = [534 354 91 22];
+      app.ElementsDropDownLabel.Text = 'Model elements';
+      
+      % Create ElementsDropDown
+      app.ElementsDropDown = uidropdown(app.OverviewTab);
+      app.ElementsDropDown.ValueChangedFcn = createCallbackFcn(app, @ElementsDropDownValueChanged, true);
+      app.ElementsDropDown.Position = [534 333 100 22];
+      app.ElementsDropDown.Items = getElemenLabels(app.eecmodel);
+      
+      % Create SpinnerLabel and Spinners
+      n = max(cellfun(@length, {app.eecmodel.Elements.Description}));
+      for i = 1:n
+        % Create SpinnerLabel
+        label = uilabel(app.OverviewTab);
+        label.Visible = 'off';
+        label.Position = [534 354-i*42 100 22];
+        label.Text = '';
+        app.UISpinnerLabels{i} = label;
+        
+        % Create Spinner
+        spinner = uispinner(app.OverviewTab);
+        spinner.Visible = 'off';
+        spinner.Limits = [0 Inf];
+        spinner.ValueChangedFcn = createCallbackFcn(app, @ElementValueChanged, true);
+        spinner.Position = [534 333-i*42 100 22];
+        app.UISpinners{i} = spinner;
+      end
+      
+      % Show the figure after all components are created
+      app.UIFigure.Visible = 'on';
+      
+    end % function createComponents(app)
+    
+    % Code that executes after component creation
+    function startupFcn(app, varargin)
+      
+      % Run DropDown value change event
+      ElementsDropDownValueChanged(app);
+      
+    end % function startupFcn(app, varargin)
+    
+    % Value changed function: ElementsDropDown
+    function ElementsDropDownValueChanged(app, ~)
+      
+      % get selected element
+      order = strcmpi(app.ElementsDropDown.Value, app.ElementsDropDown.Items);
+      element = app.eecmodel.Elements(order);
+      
+      for i = 1:length(element.Description)
+        % adjust label and spinner value
+        app.UISpinnerLabels{i}.Text = element.Description{i};
+        app.UISpinners{i}.Tooltip = element.Description{i};
+        app.UISpinners{i}.Value = max(app.UISpinners{i}.Limits(1),element.value(i));
+        % nice stepsize depending on value
+        [y,e,~] = engunits(abs(element.value(i)));
+        app.UISpinners{i}.Step = 0.1/e*10^(max(0,floor(log(y)/log(10))));
+        % app.UISpinners{i}.Step = 0.01;
+        
+        % show label and spinner
+        app.UISpinnerLabels{i}.Visible = 'on';
+        app.UISpinners{i}.Visible = 'on';
+      end
+      % hide all other labels and spinners
+      for j = i+1:length(app.UISpinnerLabels)
+        app.UISpinnerLabels{j}.Visible = 'off';
+        app.UISpinners{j}.Visible = 'off';
+      end
+      
+      % refresh plot
+      plotNyquist(app);
+      
+    end % function ElementsDropDownValueChanged(app, event)
+    
+    % Callback function
+    function ElementValueChanged(app, ~)
+      
+      % get selected element
+      order = strcmpi(app.ElementsDropDown.Value, app.ElementsDropDown.Items);
+      element = app.eecmodel.Elements(order);
+      
+      for i = 1:length(element.value)
+        element.value(i) = app.UISpinners{i}.Value;
+      end
+      
+      % set new element values
+      setElementValues(app.eecmodel,element.value,'Element',find(order))
+      
+      % refresh plot
+      plotNyquist(app);
+      
+    end % function ElementValueChanged(app, event)
+    
+    % Callback function
+    function SaveModelButtonPushed(app, ~)
+      
+      % export adjusted eecmodel values to "base" workspace
+      title = 'Save adjusted eecmodel';
+      answer = [];
+      while isempty(answer)
+        answer = inputdlg('Enter the variable name',title,[1 50],{'eecmodel'});
+        if isempty(answer)
+          return;
+        end
+        % check for valid variable name
+        if isvarname(answer{1})
+          % save eecmodel to base workspace
+          assignin("base",answer{1},app.eecmodel);
+        else
+          warning('Invalid filename %s.', answer{1});
+          answer = [];
+        end
+      end
+      
+    end % function SaveModelButtonPushed(app, event)
+    
+    % Selection change function: TabGroup
+    function TabGroupSelectionChanged(app, ~)
+      
+      selectedTab = app.TabGroup.SelectedTab;
+      
+      switch lower(selectedTab.Title)
+        case {'overview'}
+          % refresh plot
+          plotNyquist(app);
+          
+      end
+      
+    end % function TabGroupSelectionChanged(app, event)
+    
+  end % methods (Access = private, Hidden = false)
+  
+  % App creation and deletion
+  methods (Access = public, Hidden = false)
+    
+    % Construct app
+    function app = ShowNyquist(eecmodel,f_Hz,ZRe_Ohm,ZIm_Ohm,varargin)
+      
+      % Parse input parameters
+      p = inputParser;
+      p.addRequired("app",@(x)validateattributes(x,"ShowNyquist",{"scalar"}));
+      p.addRequired("eecmodel",@(x)validateattributes(x,"eec",{"scalar"}));
+      p.addRequired("f_Hz",@(x)validateattributes(x,["numeric"],{"nonempty" "nonnegative"}));
+      p.addRequired("ZRe_Ohm",@(x)validateattributes(x,["numeric"],{"nonempty" "size" size(f_Hz)}));
+      p.addRequired("ZIm_Ohm",@(x)validateattributes(x,["numeric"],{"nonempty" "size" size(f_Hz)}));
+      p.parse(app,eecmodel,f_Hz,ZRe_Ohm,ZIm_Ohm,varargin{:});
+      
+      % Copy eecmodel to properties
+      app.eecmodel = p.Results.eecmodel;
+      
+      % Copy input values to properties and skip invalid frequencies
+      f_Hz = p.Results.f_Hz(:);
+      app.ZRe_Ohm = p.Results.ZRe_Ohm(f_Hz > 0);
+      app.ZIm_Ohm = p.Results.ZIm_Ohm(f_Hz > 0);
+      app.f_Hz = f_Hz(f_Hz > 0);
+      
+      % Create UIFigure and components
+      createComponents(app)
+      
+      % Register the app with App Designer
+      registerApp(app,app.UIFigure)
+      
+      % Execute the startup function
+      runStartupFcn(app, @(app)startupFcn(app, varargin{:}))
+      
+      if nargout == 0
+        clear app
+      end
+      
+    end % Construct app
+    
+    % Destructor app
+    function delete(app)
+      
+      % Delete UIFigure when app is deleted
+      delete(app.UIFigure)
+    end % Destructor app
+    
+  end % methods (Access = public, Hidden = false)
+  
+end
