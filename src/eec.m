@@ -83,10 +83,6 @@ classdef eec < handle & matlab.mixin.CustomDisplay & matlab.mixin.SetGet
     
   end % properties(Access = private, Hidden = false)
   
-  properties(Access = private, Hidden = true)
-    
-  end % properties(Access = private, Hidden = true)
-  
   properties(Access = public, Hidden = false)
     
     % EEC elements
@@ -99,10 +95,6 @@ classdef eec < handle & matlab.mixin.CustomDisplay & matlab.mixin.SetGet
     SpicePath = "";
     
   end % properties(Access = private, Hidden = true)
-  
-  properties(Access = public, Hidden = true)
-    
-  end % properties(Access = public, Hidden = true)
   
   % Methods  
   methods(Static, Access = private, Hidden = true)
@@ -230,11 +222,47 @@ classdef eec < handle & matlab.mixin.CustomDisplay & matlab.mixin.SetGet
 
     end % Example: eecmodel = example()
     
+    function yy = filterOutlier(y,varargin)
+        % Filter outlier using multiple of standard deviation as bondaries
+        p = inputParser;
+      
+        p.addRequired("y",@(x)validateattributes(x,["numeric"],{"nonempty"}));
+        p.addOptional("alpha",0.5,@(x)validateattributes(x,["numeric"],{"nonempty"}));
+
+        p.parse(y,varargin{:});
+        
+        % Get input values
+        y = p.Results.y;
+        alpha = p.Results.alpha;
+
+        yy = y;
+        
+        % Calculate lower and upper bondaries
+        dY = std(diff(y)) * alpha;
+        lb = (smooth(y, 3) - dY);
+        ub = (smooth(y, 3) + dY);
+
+        % yy(yy > ub || yy < lb) = nan;
+        tail = 0;
+        for i = 2:length(yy)
+          if (tail == 0 && (yy(i) > ub(i) || yy(i) < lb(i)))
+            tail = i-1;
+          end
+          if (tail ~= 0 && (yy(i) < ub(i) && yy(i) > lb(i)))
+            for j = tail+1:i-1
+              yy(j) = y(tail) + (y(i) - y(tail)) / (i-tail) * (j-tail);
+            end
+            tail = 0;
+          end
+        end
+        
+    end % Filter Outlier: yy = filterOutlier(y, alpha)
+    
   end % methods(Static, Access = public, Hidden = false)
   
   methods(Access = private, Hidden = true)
     
-    function inputPromptValues(eecmodel,definput,type,description,skipDialog)
+    function inputPromptValues(eecmodel,definput,type,description,showDialog)
       % show input dialog for all element values
       prompt = cellfun(@(x)sprintf('%s for %s',description,x),[eecmodel.Elements.Description],'UniformOutput',false);
       
@@ -244,7 +272,7 @@ classdef eec < handle & matlab.mixin.CustomDisplay & matlab.mixin.SetGet
       answer = [];
       while isempty(answer)
         
-        if skipDialog
+        if showDialog
           % show input dialog to define lower bondary values
           answer = inputdlg(prompt,title,dims,definput,opts);
         else
@@ -341,6 +369,11 @@ classdef eec < handle & matlab.mixin.CustomDisplay & matlab.mixin.SetGet
       % Run transfer function and split results
       Uelements_V = cellfun(@(tf)tf(values,t_s,I_A),{eecmodel.Elements.TimeResponse},'UniformOutput',false);
       Uelements_V = [Uelements_V{:}];
+      
+      % Filter outlier
+      for i = 1:size(Uelements_V,2)
+        Uelements_V(:,i) = eec.filterOutlier(Uelements_V(:,i),0.5);
+      end
       
       % Sum of all over potentials of each single element
       U_V = sum(Uelements_V, 2);
@@ -638,7 +671,7 @@ classdef eec < handle & matlab.mixin.CustomDisplay & matlab.mixin.SetGet
       % Input parser to input validation
       p = inputParser;
       
-      p.addRequired("ModelString",@(x)validateattributes(x,["string" "char" "cell"],{"nonempty","scalartext"}));
+      p.addRequired("ModelString",@(x)validateattributes(x,["string" "char" "cell"],{"nonempty" "scalartext"}));
       p.addParameter("InitialValues",[],@(x)validateattributes(x,["numeric"],{"nonempty" "nonnegative"}));
       p.addParameter("SpicePath","",@(x)validateattributes(x,["string" "char"],{"scalartext"}));
       %       p.addParameter("Autoconfig", nan, @(x)validateattributes(x,["logical"],{"scalar"}));
@@ -716,7 +749,7 @@ classdef eec < handle & matlab.mixin.CustomDisplay & matlab.mixin.SetGet
             
             % time domain: U = L * dI/dt
             element.Equation{1} = 'U = L * dI/dt';
-            element.TimeResponse = eval(sprintf('@(values,t_s,I_A)values(%d) .* [0; diff(I_A)]./[1; diff(t_s)]',cnt));
+            element.TimeResponse = eval(sprintf('@(values,t_s,I_A)values(%d).*smooth(smooth([0;diff(I_A)]./[1;diff(t_s)],2e-6/min(diff(t_s))),2e-6/min(diff(t_s)))',cnt));
             
             element.Description{1} = sprintf('External Inductivity L%d [H]',i);
             element.initial(1) = 15e-9;
@@ -914,35 +947,37 @@ classdef eec < handle & matlab.mixin.CustomDisplay & matlab.mixin.SetGet
           I_A = p.Results.I_A(:);
         end
       end
-      I_A(isnan(I_A)) = 0;
+      idx = isnan(I_A);
+      I_A(idx) = 0;
       
       % calculate DC response
-      [U_V, Uelements_V] = calcDcResponse(eecmodel,...
+      [Umodel_V, Uelements_V] = calcDcResponse(eecmodel,...
         t_s,I_A,[eecmodel.Elements.value],varargin{:});
       
       % copy duration, voltage and current to result
       res.t_s = seconds(t_s(:));
       res.I_A = I_A(:);
-      res.U_V = U_V(:);
+      res.Umodel_V = Umodel_V(:);
       res.Uelements_V = Uelements_V;
       res.Ulabels = getElemenLabels(eecmodel);
       
     end % DC response: res = dc(eecmodel,t_s,I_A,varargin)
     
-    function res = dcfit(eecmodel,t_s,I_A,U_V,varargin)
-      %FIT run lsqcurvefit for given time/current and minimize error to
+    function res = dcfit(eecmodel,tI_s,I_A,tU_s,Umodel_V,varargin)
+      %DCFIT run lsqcurvefit for given time/current and minimize error to
       % submitted voltage waveform.
       %
-      % res = dcfit(EECMODEL,t_s,I_A,U_V,...)
+      % res = dcfit(EECMODEL,tI_s,I_A,tU_s,U_V,...)
       % returns voltage response of the EEC model for given current waveform.
       %
       % Input arguments:
       % ----------------
       %
       % EECMODEL  - EEC model object
-      % t_s       - Time vector in seconds
+      % tI_s      - Current time vector in seconds
       % I_A       - Current vector (must match with time vector) or constant
       %             current value in Ampere
+      % tU_s      - Voltage time vector in seconds
       % U_V       - Voltage vector as observed output vector in Volt
       %
       % Name-Value arguments:
@@ -954,51 +989,52 @@ classdef eec < handle & matlab.mixin.CustomDisplay & matlab.mixin.SetGet
       % Example:
       % --------
       %
-      % res = fit(eecmodel,linspace(0,10,101),[0 repmat(1,1,100)],exp(-linspace(0,10,101)/1))
-      % res = fit(eecmodel, t_s, I_A, U_V, 'Algorithm', 'trust-region-reflective')
+      % res = fit(eecmodel,linspace(0,10,101),[0 repmat(1,1,100)],linspace(0,10,101),exp(-linspace(0,10,101)/1))
+      % res = fit(eecmodel, tI_s, I_A, tU_s, U_V, 'Algorithm', 'trust-region-reflective')
       
       % Input parser to input validation
       p = inputParser;
       
       p.addRequired("eecmodel",@(x)validateattributes(x,"eec",{"scalar"}));
-      p.addRequired("t_s",@(x)validateattributes(x,["numeric" "duration"],{"nonempty"}));
-      p.addRequired("I_A",@(x)validateattributes(x,["numeric"],{"nonempty" "size" size(t_s)}));
-      p.addRequired("U_V",@(x)validateattributes(x,["numeric"],{"nonempty" "size" size(t_s)}));
+      p.addRequired("tI_s",@(x)validateattributes(x,["numeric" "duration"],{"nonempty"}));
+      p.addRequired("I_A",@(x)validateattributes(x,["numeric"],{"nonempty" "size" size(tI_s)}));
+      p.addRequired("tU_s",@(x)validateattributes(x,["numeric" "duration"],{"nonempty"}));
+      p.addRequired("U_V",@(x)validateattributes(x,["numeric"],{"nonempty" "size" size(tU_s)}));
       p.addParameter("Method",'analytical',@(x)validateattributes(x,["string" "char"],{"scalartext"}));
       p.addParameter("Algorithm",'trust-region-reflective',@(x)validateattributes(x,["string" "char"],{"scalartext"}));
       p.addParameter("LowerBoundary",[eecmodel.Elements.min],@(x)validateattributes(x,["numeric"],{"nonempty" "nonnegative" "size" size([eecmodel.Elements.min])}));
+      p.addParameter("LowerBoundaryRelative",ones(size([eecmodel.Elements.min])),@(x)validateattributes(x,["numeric"],{"nonempty" "nonnegative" "size" size([eecmodel.Elements.min])}));
       p.addParameter("UpperBoundary",[eecmodel.Elements.max],@(x)validateattributes(x,["numeric"],{"nonempty" "nonnegative" "size" size([eecmodel.Elements.max])}));
+      p.addParameter("UpperBoundaryRelative",ones(size([eecmodel.Elements.max])),@(x)validateattributes(x,["numeric"],{"nonempty" "nonnegative" "size" size([eecmodel.Elements.max])}));
       p.addParameter("SetInitials",false,@(x)validateattributes(x,["logical"],{"scalar"}));
 %       p.addParameter("MaxStepsize",[],@(x)validateattributes(x,["numeric"],{"scalar"}));
 %       p.addParameter("UseInitialConditions",false,@(x)validateattributes(x,["logical"],{"scalar"}));
       
-      p.parse(eecmodel,t_s,I_A,U_V,varargin{:});
+      p.parse(eecmodel,tI_s,I_A,tU_s,Umodel_V,varargin{:});
       
-      U_V = p.Results.U_V(:);
-      
-      % convert duration to seconds
-      if isduration(p.Results.t_s)
-        t_s = seconds(p.Results.t_s(:));
-      else
-        t_s = p.Results.t_s(:);
-      end
-%       t_s = t_s -t_s(1);
-      
+      Umodel_V = p.Results.U_V(:);
       I_A = p.Results.I_A(:);
       if isscalar(I_A)
-        I_A = ones(size(t_s)) .* I_A;
+        I_A = ones(size(tI_s)) .* I_A;
       else
-        if ~isequal(size(I_A), size(t_s))
+        if ~isequal(size(I_A), size(tI_s))
           error('eec:eec:IncorrectDataSize', ...
-            'Invalid vector length, "t_s" [%s] and "I_A" [%s] must match in size.', ...
-            eec.sizeDisp(t_s), eec.sizeDisp(I_A));
+            'Invalid vector length, "tI_s" [%s] and "I_A" [%s] must match in size.', ...
+            eec.sizeDisp(tI_s), eec.sizeDisp(I_A));
         end
       end
       I_A(isnan(I_A)) = 0;
       
-      % Reset to initial values
+      % Set initials to current values
       if logical(p.Results.SetInitials)
         setElementsValues(eecmodel,[eecmodel.Elements.value],'initial');
+      end
+      
+      % Absolute OR relative boundaries
+      if all(~contains({'LowerBoundary', 'LowerBoundaryRelative'}, p.UsingDefaults)) || ...
+          all(~contains({'UpperBoundary', 'UpperBoundaryRelative'}, p.UsingDefaults))
+        error('eec:eec:InvalidBoundaries', ...
+          'Can only handle absolute or relative boundaries.');
       end
       
       % check for selected algorithm {'levenberg-marquardt' 'trust-region-reflective'}
@@ -1012,14 +1048,26 @@ classdef eec < handle & matlab.mixin.CustomDisplay & matlab.mixin.SetGet
           algorithm = 'trust-region-reflective';
           
           % handle lower boundary
-          definput = arrayfun(@(x)sprintf('%g',x),p.Results.LowerBoundary,'UniformOutput',false);
-          skipDialog = any(contains(p.UsingDefaults, 'LowerBoundary'));
-          inputPromptValues(eecmodel,definput,'min','Lower bondary',skipDialog);
+          if ~any(contains(p.UsingDefaults, {'LowerBoundaryRelative'}))
+            % use relative boundary with initial values as reference
+            definput = arrayfun(@(x)sprintf('%g',x),[eecmodel.Elements.value] .* p.Results.LowerBoundaryRelative,'UniformOutput',false);
+          else
+            % use given (or default) lower boundary values
+            definput = arrayfun(@(x)sprintf('%g',x),p.Results.LowerBoundary,'UniformOutput',false);
+          end
+          showDialog = sum(contains(p.UsingDefaults, {'LowerBoundary', 'LowerBoundaryRelative'})) == 2;
+          inputPromptValues(eecmodel,definput,'min','Lower bondary',showDialog);
           
           % handle upper boundary
-          definput = arrayfun(@(x)sprintf('%g',x),p.Results.UpperBoundary,'UniformOutput',false);
-          skipDialog = any(contains(p.UsingDefaults, 'UpperBoundary'));
-          inputPromptValues(eecmodel,definput,'max','Upper bondary',skipDialog);
+          if ~any(contains(p.UsingDefaults, {'UpperBoundaryRelative'}))
+            % use relative boundary with initial values as reference
+            definput = arrayfun(@(x)sprintf('%g',x),[eecmodel.Elements.value] .* p.Results.UpperBoundaryRelative,'UniformOutput',false);
+          else
+            % use given (or default) lower boundary values
+            definput = arrayfun(@(x)sprintf('%g',x),p.Results.UpperBoundary,'UniformOutput',false);
+          end          
+          showDialog = sum(contains(p.UsingDefaults, {'UpperBoundary', 'UpperBoundaryRelative'})) == 2;
+          inputPromptValues(eecmodel,definput,'max','Upper bondary',showDialog);
           
           % get boundaries (min/max values)
           lb = [eecmodel.Elements.min];
@@ -1030,34 +1078,47 @@ classdef eec < handle & matlab.mixin.CustomDisplay & matlab.mixin.SetGet
       % Set lsqcurvefit options
       options = optimoptions(@lsqcurvefit,...
         'Algorithm', algorithm,...
-        'TolX', 1e-12, ...
-        'TolFun', 1e-12,...
+        'TolX', 1e-20, ...
+        'TolFun', 1e-20,...
         'Display', 'iter', ...
         'MaxIter', 100, ...
         'MaxFunEvals', 10e3, ...
         'FunValCheck', 'on',...
         'UseParallel', false);
       
-      % check for selected method {'spice' 'analytical'}
-      switch lower(p.Results.Method)
-        case {'spice'}
-          % run spice simulation for each iteration
-          fun = @(values,t_s)runSpiceNetlist(eecmodel,t_s,-I_A,values); %,varargin{:}
-          
-        otherwise
-          % run step response calculation for each iteration
-          fun = @(values,t_s)calcDcResponse(eecmodel,t_s,I_A,values); %,varargin{:}
-          
-      end
-      
-      % lsqcurvefit: Fit impedance in the time domain
       tic;
-      [fittedParameters, ~, ~, exitflag, output] = lsqcurvefit(fun,...
-        [eecmodel.Elements.value],t_s,U_V,...
-        lb,ub,options);
-      output.Exitflag = exitflag;
-      output.ComputationTime = toc;
+      for i = 1:4
+        % synchronize current/voltage signals
+        syn = sync(eecmodel,tI_s,I_A,tU_s,Umodel_V);
+
+        % convert duration to seconds
+        if isduration(syn.t_s)
+          syn.t_s = seconds(syn.t_s);
+        end
+                
+        % Omit NaN values, otherwise lsqnonline will fail
+        idx = ~isnan(syn.I_A) & ~isnan(syn.U_V);
+        
+        % check for selected method {'spice' 'analytical'}
+        switch lower(p.Results.Method)
+          case {'spice'}
+            % run spice simulation for each iteration
+            fun = @(values,t_s)runSpiceNetlist(eecmodel,t_s,-syn.I_A(idx),values); %,varargin{:}
+
+          otherwise
+            % run step response calculation for each iteration
+            fun = @(values,t_s)calcDcResponse(eecmodel,t_s,syn.I_A(idx),values); %,varargin{:}
+
+        end
       
+        % lsqcurvefit: Fit impedance in the time domain
+        [fittedParameters, ~, ~, exitflag, output] = lsqcurvefit(fun,...
+          [eecmodel.Elements.value],syn.t_s(idx),syn.U_V(idx),...
+          lb,ub,options);
+        output.Exitflag = exitflag;
+      end
+      output.ComputationTime = toc;
+        
       % set fitted values
       setElementsValues(eecmodel,fittedParameters,'value');
       
@@ -1065,12 +1126,14 @@ classdef eec < handle & matlab.mixin.CustomDisplay & matlab.mixin.SetGet
       sortElements(eecmodel);
       
       % calculate DC response for fitted model
-      [U_V, Uelements_V] = fun([eecmodel.Elements.value],t_s);
+      [Umodel_V, Uelements_V] = fun([eecmodel.Elements.value],syn.t_s(idx));
       
       % copy duration, voltage and current to result
-      res.t_s = seconds(t_s(:));
-      res.I_A = I_A(:);
-      res.U_V = U_V(:);
+      res.tsync_s = syn.tsync_s;
+      res.t_s = seconds(syn.t_s(:));
+      res.I_A = syn.I_A(:);
+      res.U_V = syn.U_V(:);
+      res.Umodel_V = Umodel_V(:);
       res.Uelements_V = Uelements_V;
       res.Ulabels = getElemenLabels(eecmodel);
       
@@ -1078,6 +1141,155 @@ classdef eec < handle & matlab.mixin.CustomDisplay & matlab.mixin.SetGet
       displayFittingResults(eecmodel,output);
       
     end % Fit time domain: function res = dcfit(eecmodel,t_s,I_A,U_V,varargin)
+    
+    function res = sync(eecmodel,tI_s,I_A,tU_s,U_V,varargin)
+      %SYNC synchronize submitted current/voltage waveform.
+      %
+      % res = sync(EECMODEL,tI_s,I_A,tU_s,U_V,...)
+      % returns current/voltage waveform with combined time vector.
+      %
+      % Input arguments:
+      % ----------------
+      %
+      % EECMODEL  - EEC model object
+      % tI_s      - Current time vector in seconds
+      % I_A       - Current vector (must match with time vector) or constant
+      %             current value in Ampere
+      % tU_s      - Voltage time vector in seconds
+      % U_V       - Voltage vector as observed output vector in Volt
+      %
+      % Example:
+      % --------
+      %
+      % res = sync(eecmodel, tI_s, I_A, tU_s, U_V)
+      
+      % Input parser to input validation
+      p = inputParser;
+      
+      p.addRequired("eecmodel",@(x)validateattributes(x,"eec",{"scalar"}));
+      p.addRequired("tI_s",@(x)validateattributes(x,["numeric" "duration"],{"nonempty"}));
+      p.addRequired("I_A",@(x)validateattributes(x,["numeric"],{"nonempty" "size" size(tI_s)}));
+      p.addRequired("tU_s",@(x)validateattributes(x,["numeric" "duration"],{"nonempty"}));
+      p.addRequired("U_V",@(x)validateattributes(x,["numeric"],{"nonempty" "size" size(tU_s)}));
+
+      p.parse(eecmodel,tI_s,I_A,tU_s,U_V,varargin{:});
+      
+      U_V = p.Results.U_V(:);
+      I_A = p.Results.I_A(:);
+      
+
+%       'TolX', 1e-12, ...
+%       'TolFun', 1e-12,...
+%       'Display', 'iter', ...
+%       'MaxIter', 100, ...
+      TolX = 50e-9;
+      MaxIter = 100;
+      
+      % convert duration to seconds
+      if isduration(p.Results.tI_s)
+        tI_s = seconds(p.Results.tI_s(:));
+      else
+        tI_s = p.Results.tI_s(:);
+      end
+      if isduration(p.Results.tU_s)
+        tU_s = seconds(p.Results.tU_s(:));
+      else
+        tU_s = p.Results.tU_s(:);
+      end
+      
+      idxU = (tU_s >= max(tI_s(1),tU_s(1)) & tU_s <= min(tI_s(end),tU_s(end)));
+      idxI = (tI_s >= max(tI_s(1),tU_s(1)) & tI_s <= min(tI_s(end),tU_s(end)));
+      t_s = tI_s(idxI);
+      
+%       figure('name','Sync');clf;
+%       subplot(3,1,1); box on; grid on; hold on;
+%       yyaxis left; plot(tU_s,U_V);
+%       yyaxis right; plot(tI_s,I_A);
+%       plot([t_s(1) t_s(1)],ylim,'k--');
+%       plot([t_s(end) t_s(end)],ylim,'k--');
+            
+      % synchronize current/voltage signals using model parameters
+      Umodel_V = calcDcResponse(eecmodel,t_s,I_A(idxI),[eecmodel.Elements.value]);
+      Umeas_V = interp1(tU_s,U_V,t_s,'spline');
+      
+      % If model has inductivity, use diff(U) as threshold
+      if any(strcmp({eecmodel.Elements.Type},'L'))
+        dUmeas_V = smooth(diff(Umeas_V),round(1e-6/min(diff(t_s))));
+        dUmodel_V = smooth(diff(Umodel_V),round(1e-6/min(diff(t_s))));
+        
+        % Get trigger values where signal drops below dU/2
+        [B, N, IB] = RunLength_M(dUmeas_V < min(dUmeas_V)/2);
+        N = N(B == 1);IB = IB(B == 1);[~,idx] = max(N);
+        Umeas_shift = IB(idx); %find(dUmeas_V < min(dUmeas_V)/2,1,'last');
+        
+        [B, N, IB] = RunLength_M(dUmodel_V < min(dUmodel_V)/2);
+        N = N(B == 1);IB = IB(B == 1);[~,idx] = max(N);
+        Umodel_shift = IB(idx); % find(dUmodel_V < min(dUmodel_V)/2,1,'last');
+        
+        tsync_s = t_s(Umeas_shift)-t_s(Umodel_shift);
+        
+%         subplot(3,1,2); box on; grid on; hold on;
+%         plot(t_s(2:end),dUmeas_V);
+%         plot(xlim, [min(dUmeas_V)/2 min(dUmeas_V)/2],'k--');
+%         plot(t_s(2:end)-t_s(Umeas_shift),dUmeas_V);
+%         plot(t_s(2:end),dUmodel_V);
+%         plot(xlim, [min(dUmodel_V)/2 min(dUmodel_V)/2],'k--');
+%         plot(t_s(2:end)-t_s(Umodel_shift),dUmodel_V);
+        
+      else
+        Umodel_V = Umodel_V - mean(Umodel_V);
+        Umeas_V = Umeas_V - mean(Umeas_V);
+        
+        % Get rought trigger values where signal drops below (Umin + Umax)/2
+        th = (max(Umeas_V)+min(Umeas_V))/2;
+        Umeas_shift = find(Umeas_V < th,1,'first');
+        Umodel_shift = find(Umodel_V < th,1,'first');
+        tsync_s = t_s(Umeas_shift)-t_s(Umodel_shift);
+        
+%         %       cm = jet(50);
+%         subplot(3,1,2);hold on;
+%         plot(t_s,Umeas_V, 'r--');
+%         plot(t_s,Umodel_V,'g');
+
+        dir = -1;
+        step = min(diff(t_s));
+        dUrms = NaN(MaxIter,1);
+        for i = 1:MaxIter
+  %         subplot(3,1,2);hold on;
+  %         plot(t_s-tsync_s,Umodel_V,'Color',cm(i,:));
+          if tsync_s > 0
+            dU = (Umeas_V(1:sum(t_s > t_s(1)+tsync_s)) - Umodel_V(t_s > t_s(1)+tsync_s));
+          else
+            dU = (Umeas_V(t_s > t_s(1)-tsync_s)) - Umodel_V(1:sum(t_s > t_s(1)-tsync_s));
+          end
+  %         subplot(3,1,3);hold on;
+  %         plot(dU,'Color', cm(i,:));
+          dUrms(i) = rms(dU);
+
+          % Residium getting higher
+          if i > 1 && dUrms(i) > dUrms(i-1)
+            break;
+  %           dir = -dir;
+  %           step = step/2;
+          end
+          tsync_s = tsync_s+step*dir;
+
+        end
+      end
+            
+      
+      res.tsync_s = seconds(tsync_s);
+      res.t_s = seconds(t_s);
+      res.U_V = interp1(tU_s,U_V,t_s+tsync_s);
+      res.I_A = I_A(idxI);
+
+%       subplot(3,1,3); box on; grid on; hold on;
+%       plot(res.t_s,res.U_V);
+%       plot(res.t_s,Umodel_V,'--');
+%       yyaxis right; hold on;
+%       plot(res.t_s,res.I_A);
+      
+    end % Sync current/voltage: function res = sync(eecmodel,tI_s,I_A,tU_s,U_V,varargin)
     
     function res = ac(eecmodel,f_Hz,varargin)
       %AC analysis calculates response for given frequency domain
@@ -1122,7 +1334,7 @@ classdef eec < handle & matlab.mixin.CustomDisplay & matlab.mixin.SetGet
     end % AC response: res = ac(eecmodel,f_Hz,varargin)
     
     function res = acfit(eecmodel,f_Hz,ZRe_Ohm,ZIm_Ohm,varargin)
-      %EIS run lsqcurvefit for given frequenzy and minimize error to submitted 
+      %ACFIT run lsqcurvefit for given frequenzy and minimize error to submitted 
       % real and imaginary part
       %
       % res = acfit(EECMODEL,f_Hz,ZRe_Ohm,ZIm_Ohm,...)
@@ -1372,10 +1584,14 @@ classdef eec < handle & matlab.mixin.CustomDisplay & matlab.mixin.SetGet
       
     end % Spice: res = spice(eecmodel,t_s,I_A,varargin)
     
-    function app = timeseries(eecmodel,tU_s,U_V,tI_s,I_A,varargin)
+    function app = timeseries(eecmodel,tI_s,I_A,tU_s,U_V,varargin)
+      
+      % 
+      I_idx = (tI_s >= max(tI_s(1),tU_s(1)) & tI_s <= min(tI_s(end),tU_s(end)));
+      U_idx = (tU_s >= max(tI_s(1),tU_s(1)) & tU_s <= min(tI_s(end),tU_s(end)));
       
       % Run MATLAB app as separate object
-      app = ShowTimeseries(eecmodel,tU_s,U_V,tI_s,I_A,varargin{:});
+      app = ShowTimeseries(eecmodel,tU_s(U_idx),U_V(U_idx),tI_s(I_idx),I_A(I_idx),varargin{:});
       
       if nargout == 0
         clear app
