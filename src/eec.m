@@ -1474,7 +1474,7 @@ classdef eec < handle & matlab.mixin.CustomDisplay & matlab.mixin.SetGet
       % Example:
       % --------
       % res = spice(eecmodel, linspace(0,10,101), 2)
-      % figure();yyaxis left;plot(res.t_s, res.U_V);yyaxis right;plot(res.t_s, res.I_A);
+      % figure();yyaxis left;plot(res.t_s, res.Umodel_V);yyaxis right;plot(res.t_s, res.I_A);
       
       p = inputParser;
       

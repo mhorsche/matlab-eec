@@ -55,7 +55,7 @@ classdef ShowTimeseries < matlab.apps.AppBase
       % EEC model element voltages
       app.UIAxesOverview.ColorOrder = co;
       app.UIAxesOverview.ColorOrderIndex = 1;
-      ocvIdx = strcmpi(response.Ulabels, 'ocv');
+      ocvIdx = contains(lower(response.Ulabels),'ocv');%strcmpi(response.Ulabels, 'ocv');
       if any(ocvIdx)
         hline = plot(app.UIAxesOverview,response.t_s(:),...
           [response.Uelements_V(:,ocvIdx) response.Uelements_V(:,~ocvIdx)+response.Uelements_V(:,ocvIdx)],'-');
@@ -155,7 +155,7 @@ classdef ShowTimeseries < matlab.apps.AppBase
       app.ElementsDropDown.ValueChangedFcn = createCallbackFcn(app, @ElementsDropDownValueChanged, true);
       app.ElementsDropDown.Position = [534 333 100 22];
       app.ElementsDropDown.Items = getElemenLabels(app.eecmodel);
-            
+      
       % Create SpinnerLabel and Spinners
       n = max(cellfun(@length, {app.eecmodel.Elements.Description}));
       for i = 1:n
