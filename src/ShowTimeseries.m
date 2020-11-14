@@ -26,6 +26,9 @@ classdef ShowTimeseries < matlab.apps.AppBase
     tI_s
     I_A
     
+    I_idx;
+    U_idx;
+    
     timeSync_s = 0
     Ifit_A
     
@@ -37,23 +40,29 @@ classdef ShowTimeseries < matlab.apps.AppBase
     function plotTimeseries(app)
       
       % Calculate dc response
-      response = dc(app.eecmodel,app.tU_s(:),app.Ifit_A(:));
+      response = dc(app.eecmodel,app.tU_s(app.U_idx),app.Ifit_A);
       
       % Timeseries plot
       cla(app.UIAxesOverview);
       co = app.UIAxesOverview.ColorOrder;
       
       % Measurement points
-      plot(app.UIAxesOverview,app.tU_s(:),app.U_V(:),'.');
+      plot(app.UIAxesOverview,app.tU_s(app.U_idx),app.U_V(app.U_idx),'.');
       
       % EEC model result
-      plot(app.UIAxesOverview,response.t_s(:),response.U_V(:),'-k');
+      plot(app.UIAxesOverview,response.t_s(:),response.Umodel_V(:),'-k');
       
       % EEC model element voltages
       app.UIAxesOverview.ColorOrder = co;
       app.UIAxesOverview.ColorOrderIndex = 1;
-      hline = plot(app.UIAxesOverview,response.t_s(:),...
-        [response.Uelements_V(:,1) response.Uelements_V(:,2:end)+response.Uelements_V(:,1)],'-');
+      ocvIdx = contains(lower(response.Ulabels),'ocv');%strcmpi(response.Ulabels, 'ocv');
+      if any(ocvIdx)
+        hline = plot(app.UIAxesOverview,response.t_s(:),...
+          [response.Uelements_V(:,ocvIdx) response.Uelements_V(:,~ocvIdx)+response.Uelements_V(:,ocvIdx)],'-');
+      else
+        hline = plot(app.UIAxesOverview,response.t_s(:),...
+        response.Uelements_V(:,:),'-');
+      end
       
       % Highlight selected element
       hline(strcmpi(app.ElementsDropDown.Value, app.ElementsDropDown.Items)).LineWidth = 2;
@@ -67,7 +76,7 @@ classdef ShowTimeseries < matlab.apps.AppBase
       cla(app.UIAxesResidual);
       
       % Measurement - (EEC model voltage)
-      plot(app.UIAxesResidual,app.tU_s(:),app.U_V(:)-response.U_V(:),'.-');
+      plot(app.UIAxesResidual,response.t_s(:),app.U_V(app.U_idx)-response.Umodel_V(:),'.-');
       xtickformat(app.UIAxesResidual, 'mm:ss.SSS');
       
     end % function plotTimeseries(app)
@@ -131,7 +140,7 @@ classdef ShowTimeseries < matlab.apps.AppBase
       
       % Create SpinnerTime
       app.SpinnerTime = uispinner(app.OverviewTab);
-      app.SpinnerTime.Step = 0.1;
+      app.SpinnerTime.Step = 1e-6;
       app.SpinnerTime.Value = app.timeSync_s;
       app.SpinnerTime.ValueChangedFcn = createCallbackFcn(app, @SyncTimeValueChanged, true);
       app.SpinnerTime.Position = [534 412 100 22];
@@ -145,8 +154,8 @@ classdef ShowTimeseries < matlab.apps.AppBase
       app.ElementsDropDown = uidropdown(app.OverviewTab);
       app.ElementsDropDown.ValueChangedFcn = createCallbackFcn(app, @ElementsDropDownValueChanged, true);
       app.ElementsDropDown.Position = [534 333 100 22];
-      app.ElementsDropDown.Items = getElemenLabels(app.eecmodel);
-            
+      app.ElementsDropDown.Items = getElementLabels(app.eecmodel);
+      
       % Create SpinnerLabel and Spinners
       n = max(cellfun(@length, {app.eecmodel.Elements.Description}));
       for i = 1:n
@@ -181,9 +190,19 @@ classdef ShowTimeseries < matlab.apps.AppBase
     
     % Value changed function: SpinnerTime
     function SyncTimeValueChanged(app, ~)
-            
+      
+      % Set time sync value
+      app.timeSync_s = app.SpinnerTime.Value;
+      
+      % Trim time vector to overlapping area only
+%       app.I_idx = (app.tI_s(:)+seconds(app.timeSync_s) >= max(app.tI_s(1)+seconds(app.timeSync_s),app.tU_s(1)) & app.tI_s(:)+seconds(app.timeSync_s) <= min(app.tI_s(end)+seconds(app.timeSync_s),app.tU_s(end)));
+      app.U_idx = find(app.tU_s(:) >= max(app.tI_s(1)+seconds(app.timeSync_s),app.tU_s(1)) & app.tU_s(:) <= min(app.tI_s(end)+seconds(app.timeSync_s),app.tU_s(end)));
+      
       % Interp1 to match new time vector
-      app.Ifit_A = interp1(app.tI_s(:)+seconds(app.SpinnerTime.Value),app.I_A(:),app.tU_s(:));
+      app.Ifit_A = interp1(app.tI_s+seconds(app.timeSync_s),app.I_A,app.tU_s(app.U_idx));
+%       if length(app.U_idx) ~= length(app.Ifit_A)
+%         app.U_idx = app.U_idx();
+%       end
       
       % Update plot
       plotTimeseries(app);
@@ -204,7 +223,7 @@ classdef ShowTimeseries < matlab.apps.AppBase
         app.UISpinners{i}.Value = element.value(i);
         % nice stepsize depending on value
         [y,e,~] = engunits(abs(element.value(i)));
-        app.UISpinners{i}.Step = 1e-3/e*10^(max(0,floor(log(y)/log(10))));
+        app.UISpinners{i}.Step = 1e-1/e*10^(max(0,floor(log(y)/log(10))));
         
         % show label and spinner
         app.UISpinnerLabels{i}.Visible = 'on';
@@ -323,7 +342,10 @@ classdef ShowTimeseries < matlab.apps.AppBase
       end
       
       % Interpolate current waveform initially
-      app.Ifit_A = interp1(app.tI_s(:)+seconds(app.timeSync_s),app.I_A(:),app.tU_s(:));
+%       app.I_idx = (app.tI_s(:)+seconds(app.timeSync_s) >= max(app.tI_s(1)+seconds(app.timeSync_s),app.tU_s(1)) & app.tI_s(:)+seconds(app.timeSync_s) <= min(app.tI_s(end)+seconds(app.timeSync_s),app.tU_s(end)));
+      app.U_idx = (app.tU_s(:) >= max(app.tI_s(1)+seconds(app.timeSync_s),app.tU_s(1)) & app.tU_s(:) <= min(app.tI_s(end)+seconds(app.timeSync_s),app.tU_s(end)));
+      
+      app.Ifit_A = interp1(app.tI_s+seconds(app.timeSync_s),app.I_A,app.tU_s(app.U_idx));
       
       % Create UIFigure and components
       createComponents(app)
