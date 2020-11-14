@@ -100,7 +100,7 @@ classdef ShowNyquist < matlab.apps.AppBase
       app.ElementsDropDown = uidropdown(app.OverviewTab);
       app.ElementsDropDown.ValueChangedFcn = createCallbackFcn(app, @ElementsDropDownValueChanged, true);
       app.ElementsDropDown.Position = [534 333 100 22];
-      app.ElementsDropDown.Items = getElemenLabels(app.eecmodel);
+      app.ElementsDropDown.Items = getElementLabels(app.eecmodel);
       
       % Create SpinnerLabel and Spinners
       n = max(cellfun(@length, {app.eecmodel.Elements.Description}));
