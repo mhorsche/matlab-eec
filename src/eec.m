@@ -902,7 +902,7 @@ classdef eec < handle & matlab.mixin.CustomDisplay & matlab.mixin.SetGet
       
       % run spice simulation
       tSim = tic;
-      res = system(sprintf("%s -b %s",eecmodel.SpicePath,netlistName));
+      res = system(sprintf('"%s" -b %s',eecmodel.SpicePath,netlistName));
       if res > 0
         eecmodel.SpiceSimulation = [];
          ME = MException('eec:runSpiceNetlist:SpiceSimulationError', ...
