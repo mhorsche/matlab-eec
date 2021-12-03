@@ -702,7 +702,7 @@ classdef eec < handle & matlab.mixin.CustomDisplay & matlab.mixin.SetGet
       end
       
       % Sum of all over potentials of each single element
-      U_V = sum(Uelements_V, 2);
+      U_V = sum(Uelements_V, 2, 'omitnan');
       
     end % function [U_V, Uelements_V] = calcDcResponse(eecmodel,t_s,I_A,values,varargin)
     
@@ -902,7 +902,7 @@ classdef eec < handle & matlab.mixin.CustomDisplay & matlab.mixin.SetGet
       
       % run spice simulation
       tSim = tic;
-      res = system(sprintf("%s -b %s",eecmodel.SpicePath,netlistName));
+      res = system(sprintf('"%s" -b %s',eecmodel.SpicePath,netlistName));
       if res > 0
         eecmodel.SpiceSimulation = [];
          ME = MException('eec:runSpiceNetlist:SpiceSimulationError', ...
@@ -1067,8 +1067,11 @@ classdef eec < handle & matlab.mixin.CustomDisplay & matlab.mixin.SetGet
       %   Name-Value arguments:
       %   ---------------------
       %
-      %   Iterations   - Number of iterations to minimize error. Default
-      %                  value is 100
+      %   Iterations    - Number of iterations to minimize error. Default
+      %                   value is 100
+      %   doPlot        - Plot DC response. This can be either a logical
+      %                   value or a figure handle which should be used
+      %                   instead of a new figure.
       %
       %   Example:
       %   --------
@@ -1085,6 +1088,7 @@ classdef eec < handle & matlab.mixin.CustomDisplay & matlab.mixin.SetGet
       p.addRequired("U_V",@(x)validateattributes(x,["numeric"],{"nonempty" "size" size(tU_s)}));
 
       p.addParameter("Iterations",100,@(x)validateattributes(x,["numeric"],{"nonempty" "nonzero" "nonnegative"}));
+      p.addParameter("doPlot",false,@(x)validateattributes(x,["logical" "handle"],{"scalar"}));
       
       p.parse(eecmodel,tI_s,I_A,tU_s,U_V,varargin{:});
       
@@ -1129,6 +1133,39 @@ classdef eec < handle & matlab.mixin.CustomDisplay & matlab.mixin.SetGet
         Umodel_shift = index(idx);
         
         tsync_s = t_s(Umeas_shift)-t_s(Umodel_shift);
+        
+        % Plot results?
+        if p.Results.doPlot ~= false
+          % new figure or use given handle
+          if ~ishandle(p.Results.doPlot)
+            h = figure('Name', 'EEC - Synchronisation');
+          else
+            h = figure(p.Results.doPlot);
+          end
+                    
+          % new axes
+          ax = axes();
+          hold on; grid on; box on;
+          
+          % show voltage response
+          yyaxis left;
+          ax.YAxis(1).Color = [0 0 0];
+          plot(t_s,Umeas_V,'-','Color',[0 0.4470 0.7410]);
+          plot(t_s,Umodel_V-mean(Umodel_V-Umeas_V),'-','Color',[0.8500 0.3250 0.0980]);
+          ylabel('voltage in V')
+          
+          plot([t_s(Umeas_shift) t_s(Umeas_shift)],ylim,'-','Color',[0 0.4470 0.7410]);
+          plot([t_s(Umodel_shift) t_s(Umodel_shift)],ylim,'-','Color',[0.8500 0.3250 0.0980]);
+          
+          % show differential voltage response
+          yyaxis right;
+          ax.YAxis(2).Color = [0 0 0];
+          plot(t_s(1:end-1),dUmeas_V,'--','Color',[0 0.4470 0.7410]);
+          hold on;
+          plot(t_s(1:end-1),dUmodel_V,'--','Color',[0.8500 0.3250 0.0980]);
+          ylabel('differential voltage in V/s')
+                    
+        end
         
       else
         
@@ -1948,6 +1985,17 @@ classdef eec < handle & matlab.mixin.CustomDisplay & matlab.mixin.SetGet
             element.initial(1) = 35e-3;
             
           case 'L'
+            % frequency domain: tf = s*L
+            element.TransferFunction = eval(sprintf('@(values,omega) omega .* values(%d)',cnt));
+            
+            % time domain: U = L * dI/dt
+            element.Equation{1} = 'U = L * dI/dt';
+            element.TimeResponse = eval(sprintf('@(values,t_s,I_A)values(%d).*smooth(smooth([0;diff(I_A)]./[1;diff(t_s)],2e-6/min(diff(t_s))),2e-6/min(diff(t_s)))',cnt));
+            
+            element.Description{1} = sprintf('External Inductivity L%d [H]',i);
+            element.initial(1) = 15e-9;
+            
+          case 'CL'
             % frequency domain: tf = s*L
             element.TransferFunction = eval(sprintf('@(values,omega) omega .* values(%d)',cnt));
             
