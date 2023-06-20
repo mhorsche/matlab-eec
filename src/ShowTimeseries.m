@@ -169,7 +169,7 @@ classdef ShowTimeseries < matlab.apps.AppBase
         % Create Spinner
         spinner = uispinner(app.OverviewTab);
         spinner.Visible = 'off';
-        spinner.Limits = [0 Inf];
+        spinner.Limits = [-Inf Inf];
         spinner.ValueChangedFcn = createCallbackFcn(app, @ElementValueChanged, true);
         spinner.Position = [534 333-i*42 100 22];
         app.UISpinners{i} = spinner;
